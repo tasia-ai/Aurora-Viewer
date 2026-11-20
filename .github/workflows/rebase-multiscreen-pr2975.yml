@@ -112,6 +112,10 @@ jobs:
 
           PY
             git add Cargo.lock crates/aurora-viewer/Cargo.toml crates/aurora-viewer/src/app.rs crates/aurora-viewer/src/main.rs crates/aurora-viewer/src/ui/widgets.rs crates/aurora-viewer/src/native_viewports.rs crates/aurora-viewer/src/window_display.rs crates/aurora-viewer/src/settings.rs crates/aurora-viewer/src/settings/backup.rs crates/aurora-viewer/src/ui/chat/popout.rs crates/aurora-viewer/src/ui/options/pages/layout.rs crates/aurora-i18n/locales/en.ftl crates/aurora-i18n/locales/fr.ftl crates/aurora-i18n/locales/ja.ftl
+            echo '===== MERGED UI FRAME ====='
+            sed -n '13095,13180p' crates/aurora-viewer/src/app.rs
+            echo '===== MERGED FLOATER WIDGET ====='
+            sed -n '1270,1325p' crates/aurora-viewer/src/ui/widgets.rs
             git -c core.editor=true cherry-pick --continue
           fi
           git show -s --format='Candidate: %H | author: %an <%ae> | committer: %cn <%ce>' HEAD
@@ -121,6 +125,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Check syntax and formatting early
+        shell: bash
+        run: cargo fmt --all -- --check
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
