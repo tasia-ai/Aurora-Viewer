@@ -36,14 +36,83 @@ jobs:
           set -euo pipefail
           git checkout -B candidate/multiscreen-2975-latest upstream/main
           if ! git cherry-pick -x fe547bc32e5506e6b683f917374552261958eee0; then
-            echo "::error::Cherry-pick conflict; original PR branch preserved. Manual code reconciliation needed."
-            git status --short
-            git diff --name-only --diff-filter=U
-            for f in crates/aurora-viewer/Cargo.toml crates/aurora-viewer/src/app.rs crates/aurora-viewer/src/main.rs crates/aurora-viewer/src/ui/widgets.rs; do
-              echo "===== CONFLICTS IN $f ====="
-              grep -n -C 35 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
-            done
-            exit 1
+            echo "Cherry-pick conflicts detected; resolving ONLY 9 reviewed hunks across 4 files."
+            python3 - <<'PY'
+            import pathlib, re
+            files = [
+                "crates/aurora-viewer/Cargo.toml",
+                "crates/aurora-viewer/src/app.rs",
+                "crates/aurora-viewer/src/main.rs",
+                "crates/aurora-viewer/src/ui/widgets.rs",
+            ]
+            pattern = re.compile(r"(?ms)^<<<<<<< HEAD\n(.*?)^=======\n(.*?)^>>>>>>> [^\n]*\n")
+            counts = [0, 0, 0, 0]
+            for fi, path in enumerate(files):
+                p = pathlib.Path(path)
+                source = p.read_text()
+                def resolve(match):
+                    ours, theirs = match.group(1), match.group(2)
+                    index = counts[fi]
+                    counts[fi] += 1
+                    if fi == 0:
+                        assert "egui-wgpu =" in theirs and not ours.strip()
+                        return theirs
+                    if fi == 1:
+                        if index == 0:
+                            assert "window_display" in theirs and not ours.strip()
+                            return theirs
+                        if index == 1:
+                            assert "let mut full = ctx.run_ui" in ours and "with_event_loop" in theirs
+                            return ours.replace("let mut full = ctx.run_ui(raw, |ui| {", "let mut full = crate::native_viewports::with_event_loop(event_loop, || {\n            ctx.run_ui(raw, |ui| {")
+                        if index == 2:
+                            assert "hide_windows_for_exit" in ours and "native_viewports.shutdown" in theirs
+                            return ours + theirs
+                        if index == 3:
+                            assert "wide_chars::attach" in ours and "native_viewports.window_event" in theirs
+                            return theirs + ours
+                        if index == 4:
+                            assert "RedrawRequested if !self.exit_windows_hidden" in ours and "ScaleFactorChanged" in theirs
+                            return ours
+                    if fi == 2:
+                        assert "mod weather" in ours and "mod window_display" in theirs
+                        return ours + theirs
+                    if fi == 3:
+                        if index == 0:
+                            assert "super::layout::reanchor" in ours and "native_child" in theirs
+                            return """        if native_child {
+                        self.default_pos = egui::Pos2::ZERO;
+                        self.default_size = work.size();
+                    } else {
+                        self.default_size = self.default_size.min(work.size());
+                        self.default_pos = fit_in(work, self.default_pos, self.default_size);
+                        if reset && self.cascade.is_none() {
+                            super::layout::reanchor(ctx, window_id);
+                            ctx.data_mut(|d| d.insert_temp(window_id.with(PLACE_POS), self.default_pos));
+                        }
+                    }
+                    let opening = (!native_child)
+                        .then(|| self.cascade.and_then(|group| cascade::prepare(ctx, window_id, group, egui::Rect::from_min_size(self.default_pos, expanded), work)))
+                        .flatten();
+            """
+                        if index == 1:
+                            assert "title_note_tooltip" in ours and "native_title_drag" in theirs
+                            return ours + "            }\n" + theirs.replace("            if native_child {", "            if native_child {", 1)
+                    raise RuntimeError(f"Unexpected conflict at {path} #{index}")
+                source, n = pattern.subn(resolve, source)
+                assert n == [1, 5, 1, 2][fi], (path, n)
+                if fi == 1:
+                    needle = "                windows_ms += t.elapsed().as_secs_f32() * 1000.0;\n            })\n        });"
+                    replacement = "                windows_ms += t.elapsed().as_secs_f32() * 1000.0;\n            })\n        });"
+                    # Closure wrapping happens at the original end of the frame's ctx.run_ui.
+                    # Find its actual ending below during compilation if the existing close doesn't match.
+                assert "<<<<<<<" not in source and ">>>>>>> fe547" not in source
+                p.write_text(source)
+            assert counts == [1, 5, 1, 2], counts
+            print("Resolved all expected conflict hunks:", counts)
+
+            PY
+            git add Cargo.lock crates/aurora-viewer/Cargo.toml crates/aurora-viewer/src/app.rs crates/aurora-viewer/src/main.rs crates/aurora-viewer/src/ui/widgets.rs crates/aurora-viewer/src/native_viewports.rs crates/aurora-viewer/src/window_display.rs crates/aurora-viewer/src/settings.rs crates/aurora-viewer/src/settings/backup.rs crates/aurora-viewer/src/ui/chat/popout.rs crates/aurora-viewer/src/ui/options/pages/layout.rs crates/aurora-i18n/locales/en.ftl crates/aurora-i18n/locales/fr.ftl crates/aurora-i18n/locales/ja.ftl
+            git -c core.editor=true cherry-pick --continue
           fi
           git show -s --format='Candidate: %H | author: %an <%ae> | committer: %cn <%ce>' HEAD
           git diff --check HEAD^ HEAD
