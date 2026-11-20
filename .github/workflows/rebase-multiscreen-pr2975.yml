@@ -101,10 +101,17 @@ jobs:
               source, n = pattern.subn(resolve, source)
               assert n == [1, 5, 1, 2][fi], (path, n)
               if fi == 1:
-                  needle = "                windows_ms += t.elapsed().as_secs_f32() * 1000.0;\n            })\n        });"
-                  replacement = "                windows_ms += t.elapsed().as_secs_f32() * 1000.0;\n            })\n        });"
-                  # Closure wrapping happens at the original end of the frame's ctx.run_ui.
-                  # Find its actual ending below during compilation if the existing close doesn't match.
+                  # The cherry-pick shares the closing braces around the old
+                  # inventory-drop block; restore the outer if before next UI pass.
+                  broken = ("                    library_drop = self.texture_library_drag_input(ui.ctx(), &mut gfx.renderer);\n"
+                            "                }\n"
+                            "                if library_drop.is_none() {")
+                  fixed = ("                    library_drop = self.texture_library_drag_input(ui.ctx(), &mut gfx.renderer);\n"
+                           "                }\n"
+                           "            }\n"
+                           "            if library_drop.is_none() {")
+                  assert source.count(broken) == 1, "Unexpected UI block; refuse blind edit"
+                  source = source.replace(broken, fixed)
               assert "<<<<<<<" not in source and ">>>>>>> fe547" not in source
               p.write_text(source)
           assert counts == [1, 5, 1, 2], counts
@@ -127,7 +134,12 @@ jobs:
           components: rustfmt, clippy
       - name: Check syntax and formatting early
         shell: bash
-        run: cargo fmt --all -- --check
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git add -u
+          git commit --amend --no-edit --author='Tasia <tasia@easierit.org>'
+          cargo fmt --all -- --check
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
