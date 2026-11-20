@@ -1,0 +1,67 @@
+name: Rebase multiscreen PR 2975 onto upstream Aurora
+
+on:
+  push:
+    branches:
+      - automation/upgrade-multiscreen-pr2975
+    paths:
+      - .github/workflows/rebase-multiscreen-pr2975.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update-pr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout fork including history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Set Tasia commit identity and fetch upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Tasia'
+          git config user.email 'tasia@easierit.org'
+          git remote add upstream https://github.com/Aurora-Viewer/Aurora-Viewer.git
+          git fetch upstream main
+          git fetch origin feat/native-multimonitor-floaters
+          test "$(git rev-parse origin/feat/native-multimonitor-floaters)" = "fe547bc32e5506e6b683f917374552261958eee0"
+      - name: Prepare latest candidate without touching original PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -B candidate/multiscreen-2975-latest upstream/main
+          if ! git cherry-pick -x fe547bc32e5506e6b683f917374552261958eee0; then
+            echo "::error::Cherry-pick conflict; original PR branch preserved. Manual code reconciliation needed."
+            git status --short
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+          git show -s --format='Candidate: %H | author: %an <%ae> | committer: %cn <%ce>' HEAD
+          git diff --check HEAD^ HEAD
+          echo "Candidate commit $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libgl1-mesa-dev pkg-config libfontconfig1-dev
+      - name: Validate build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo check --locked -p aurora-viewer
+      - name: Publish candidate ONLY (keep original PR untouched for review)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/candidate/multiscreen-2975-latest
+          echo "Candidate branch: candidate/multiscreen-2975-latest" >> "$GITHUB_STEP_SUMMARY"
+          echo "Original PR #2975 remains unchanged until candidate tests and conflicts are reviewed." >> "$GITHUB_STEP_SUMMARY"
