@@ -39,42 +39,10 @@ jobs:
             echo "::error::Cherry-pick conflict; original PR branch preserved. Manual code reconciliation needed."
             git status --short
             git diff --name-only --diff-filter=U
-            python3 - <<'PY'
-          import pathlib, re
-          paths = ['crates/aurora-viewer/Cargo.toml', 'crates/aurora-viewer/src/app.rs', 'crates/aurora-viewer/src/main.rs', 'crates/aurora-viewer/src/ui/widgets.rs']
-          for path in paths:
-              s = pathlib.Path(path).read_text()
-              print(f'\\n========== CONFLICT HUNKS: {path} ==========', flush=True)
-              for i, m in enumerate(re.finditer(r'(?ms)^<<<<<<< .*?^>>>>>>> .*?
-          fi
-          git show -s --format='Candidate: %H | author: %an <%ae> | committer: %cn <%ce>' HEAD
-          git diff --check HEAD^ HEAD
-          echo "Candidate commit $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libgl1-mesa-dev pkg-config libfontconfig1-dev
-      - name: Validate build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all -- --check
-          cargo check --locked -p aurora-viewer
-      - name: Publish candidate ONLY (keep original PR untouched for review)
-        shell: bash
-        run: |
-          set -euo pipefail
-          git push origin HEAD:refs/heads/candidate/multiscreen-2975-latest
-          echo "Candidate branch: candidate/multiscreen-2975-latest" >> "$GITHUB_STEP_SUMMARY"
-          echo "Original PR #2975 remains unchanged until candidate tests and conflicts are reviewed." >> "$GITHUB_STEP_SUMMARY"
-, s), 1):
-                  a=max(0,m.start()-650); b=min(len(s),m.end()+650)
-                  print(f'\\n--- HUNK {i} ---\\n{s[a:b][:17000]}', flush=True)
-          PY
+            for f in crates/aurora-viewer/Cargo.toml crates/aurora-viewer/src/app.rs crates/aurora-viewer/src/main.rs crates/aurora-viewer/src/ui/widgets.rs; do
+              echo "===== CONFLICTS IN $f ====="
+              grep -n -C 35 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
+            done
             exit 1
           fi
           git show -s --format='Candidate: %H | author: %an <%ae> | committer: %cn <%ce>' HEAD
