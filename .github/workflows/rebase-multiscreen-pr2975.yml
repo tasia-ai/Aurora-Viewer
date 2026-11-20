@@ -149,6 +149,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all -- --check
+          cargo metadata --format-version 1 > /dev/null
+          if ! git diff --quiet -- Cargo.lock; then
+            git add Cargo.lock
+            git commit --amend --no-edit --author='Tasia <tasia@easierit.org>'
+          fi
           cargo check --locked -p aurora-viewer
       - name: Publish candidate ONLY (keep original PR untouched for review)
         shell: bash
