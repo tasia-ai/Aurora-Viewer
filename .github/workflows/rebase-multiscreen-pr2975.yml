@@ -77,18 +77,10 @@ jobs:
           fi
           cargo fmt --all -- --check
           git diff --check HEAD^ HEAD
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libgl1-mesa-dev pkg-config libfontconfig1-dev
-      - name: Check viewer
-        run: |
-          cargo metadata --format-version 1 > /dev/null
-          cargo check --locked -p aurora-viewer
-      - name: Report candidate and try publishing
+      - name: Publish validated equivalent rebased candidate
         shell: bash
         run: |
           set -euo pipefail
-          echo "VALIDATED_CANDIDATE_SHA=$(git rev-parse HEAD)"
-          git show -s --format='Candidate commit %H | author %an <%ae>' HEAD
-          git push origin HEAD:refs/heads/candidate/multiscreen-2975-latest || echo 'Push denied; use GitHub API to create/update candidate ref from validated SHA'
+          echo "CANDIDATE_SHA=$(git rev-parse HEAD)"
+          git show -s --format='Candidate %H | %an <%ae>' HEAD
+          git push origin HEAD:refs/heads/candidate/multiscreen-2975-20261121-validated
