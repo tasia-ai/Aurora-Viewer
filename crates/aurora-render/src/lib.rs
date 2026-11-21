@@ -317,6 +317,8 @@ mod shader_tests {
             ..Default::default()
         }))
         .expect("GPU device");
+        // These four-metre test patches cover every sampled ray while avoiding
+        // extreme off-screen triangles that distort depth interpolation on an 8x8 target.
         let source = format!(
             r#"
 struct ProbeFrame {{view_proj:mat4x4<f32>}};
@@ -325,12 +327,13 @@ struct VsIn {{@builtin(vertex_index) vertex:u32,@builtin(instance_index) layer:u
 struct WaterOut {{@builtin(position) clip:vec4<f32>,@location(0) world_pos:vec3<f32>,@location(1) level:f32}};
 struct VsOut {{@builtin(position) clip:vec4<f32>,@location(0) world_pos:vec3<f32>}};
 fn water_vertex(input:VsIn)->WaterOut {{
-    let corners=array<vec2<f32>,6>(vec2<f32>(-100.0,-100.0),vec2<f32>(100.0,-100.0),vec2<f32>(100.0,100.0),
-        vec2<f32>(-100.0,-100.0),vec2<f32>(100.0,100.0),vec2<f32>(-100.0,100.0));
+    let corners=array<vec2<f32>,6>(vec2<f32>(-2.0,-2.0),vec2<f32>(2.0,-2.0),vec2<f32>(2.0,2.0),
+        vec2<f32>(-2.0,-2.0),vec2<f32>(2.0,2.0),vec2<f32>(-2.0,2.0));
     let world=vec3<f32>(corners[input.vertex],20.0-f32(input.layer)*0.01);
     return WaterOut(frame.view_proj*vec4<f32>(world,1.0),world,20.0);
 }}
-fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);}}
+// Red marks coverage; green records the physical depth used for this pixel.
+fn water_pixel(surface:WaterOut)->vec4<f32> {{let c=frame.view_proj*vec4<f32>(surface.world_pos,1.0);let d=clamp(c.z/max(c.w,0.000001),0.0,1.0);return vec4<f32>(1.0,d,0.0,1.0);}}
 @vertex fn vs_exclusion(input:VsIn)->VsOut {{let water=water_vertex(input);return VsOut(water.clip,water.world_pos);}}
 {vertex}
 {fragment}
@@ -361,6 +364,8 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
             1,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
+        let mut visible_in_front_of_occluder = 0usize;
+        let mut occluded_by_opaque_depth = 0usize;
         for samples in [1, 4] {
             let msaa = (samples > 1).then(|| {
                 crate::renderer::make_view(
@@ -435,7 +440,10 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
                         let camera = glam::camera::rh::view::look_at_mat4(eye, eye + glam::Vec3::Y, up);
                         let projection =
                             glam::camera::rh::proj::directx::perspective_infinite_reverse(std::f32::consts::FRAC_PI_3, 1.5, 0.1);
-                        queue.write_buffer(&uniform, 0, bytemuck::cast_slice(&(projection * camera).to_cols_array()));
+                        let view_proj = projection * camera;
+                        queue.write_buffer(&uniform, 0, bytemuck::cast_slice(&view_proj.to_cols_array()));
+                        // The eye-to-water gap does not determine every pixel's depth; use a clear-depth pass as reference.
+                        let mut baseline_pixels: Option<Vec<(u8, u8)>> = None;
                         for occluder in [0.0, 0.75] {
                             let mut encoder = device.create_command_encoder(&Default::default());
                             {
@@ -446,7 +454,7 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
                                         resolve_target: msaa.as_ref().map(|_| &view),
                                         ops: wgpu::Operations {
                                             load: wgpu::LoadOp::Clear(wgpu::Color {
-                                                r: 1.0,
+                                                r: 0.0,
                                                 g: 0.0,
                                                 b: 0.0,
                                                 a: 1.0,
@@ -493,15 +501,51 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
                             readback.map_async(wgpu::MapMode::Read, .., |r| r.expect("water mesh readback"));
                             device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU completion");
                             let pixels = readback.get_mapped_range(..).expect("water mesh pixels");
-                            for y in [0usize, 7] {
-                                let covered =
-                                    ((delta > 0.0 && y == 7) || (delta < 0.0 && y == 0)) && (occluder == 0.0 || delta.abs() < 0.1);
-                                for x in 0..8 {
-                                    assert_eq!(
-                                        &pixels[y * 256 + x * 4..y * 256 + x * 4 + 4],
-                                        if covered { &[0, 0, 255, 255] } else { &[255, 0, 0, 255] },
-                                        "eye {delta}, roll {roll}, hardware {hardware}, samples {samples}, occluder {occluder}, pixel {x},{y}"
-                                    );
+                            if occluder == 0.0 {
+                                let mut baseline = Vec::with_capacity(16);
+                                for y in [0usize, 7] {
+                                    for x in 0..8 {
+                                        let offset = y * 256 + x * 4;
+                                        let covered = pixels[offset] > 0;
+                                        let expected = (delta > 0.0 && y == 7) || (delta < 0.0 && y == 0);
+                                        assert_eq!(
+                                            covered, expected,
+                                            "coverage eye {delta}, roll {roll}, hardware {hardware}, samples {samples}, pixel {x},{y}"
+                                        );
+                                        baseline.push((pixels[offset], pixels[offset + 1]));
+                                    }
+                                }
+                                baseline_pixels = Some(baseline);
+                            } else {
+                                let baseline = baseline_pixels.as_ref().expect("clear-depth reference render");
+                                for y in [0usize, 7] {
+                                    for x in 0..8 {
+                                        let offset = y * 256 + x * 4;
+                                        let index = if y == 0 { x } else { 8 + x };
+                                        let (coverage, encoded_depth) = baseline[index];
+                                        let actual_coverage = pixels[offset] > 0;
+                                        if coverage == 0 {
+                                            assert!(
+                                                !actual_coverage,
+                                                "opaque depth created water coverage: eye {delta}, roll {roll}, hardware {hardware}, samples {samples}, pixel {x},{y}"
+                                            );
+                                            continue;
+                                        }
+                                        let depth = encoded_depth as f32 / coverage as f32;
+                                        if depth > occluder + 0.02 {
+                                            assert!(
+                                                actual_coverage,
+                                                "water in front of opaque depth was lost: depth {depth:.3}, eye {delta}, roll {roll}, hardware {hardware}, samples {samples}, pixel {x},{y}"
+                                            );
+                                            visible_in_front_of_occluder += 1;
+                                        } else if depth < occluder - 0.02 {
+                                            assert!(
+                                                !actual_coverage,
+                                                "water behind opaque depth remained visible: depth {depth:.3}, eye {delta}, roll {roll}, hardware {hardware}, samples {samples}, pixel {x},{y}"
+                                            );
+                                            occluded_by_opaque_depth += 1;
+                                        }
+                                    }
                                 }
                             }
                             drop(pixels);
@@ -511,6 +555,11 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
                 }
             }
         }
+        assert!(
+            visible_in_front_of_occluder > 0,
+            "the test must retain water in front of opaque geometry"
+        );
+        assert!(occluded_by_opaque_depth > 0, "the test must reject water behind opaque geometry");
         // Two real water sheets project to the same pixels. A near-clamped
         // depth would merge them before near and make the last draw win.
         let (interface_tex, interface) = crate::renderer::make_view(
@@ -565,8 +614,13 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
             let view = glam::camera::rh::view::look_at_mat4(eye, eye + glam::Vec3::Y, glam::Vec3::Z);
             let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(std::f32::consts::FRAC_PI_3, 1.5, 0.1);
             queue.write_buffer(&uniform, 0, bytemuck::cast_slice(&(projection * view).to_cols_array()));
-            let mut reference = None;
-            for order in [[0u32, 1], [1, 0]] {
+            // Compare two-sheet results to single-sheet GPU references. This uses
+            // the actual raster sample locations and interpolation, rather than
+            // assuming an ideal pixel-center intersection for a huge triangle.
+            let mut nearest_reference: Option<Vec<f32>> = None;
+            let mut farther_reference: Option<Vec<f32>> = None;
+            let mut combined_orders = 0;
+            for order in [vec![0u32], vec![1u32], vec![0, 1], vec![1, 0]] {
                 let mut encoder = device.create_command_encoder(&Default::default());
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -586,7 +640,7 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
                     });
                     pass.set_pipeline(&interface_pipe);
                     pass.set_bind_group(0, &group, &[]);
-                    for layer in order {
+                    for &layer in &order {
                         pass.draw(0..6, layer..layer + 1);
                     }
                 }
@@ -616,24 +670,32 @@ fn water_pixel(surface:WaterOut)->vec4<f32> {{return vec4<f32>(0.0,0.0,1.0,1.0);
                 device.poll(wgpu::PollType::wait_indefinitely()).expect("GPU completion");
                 let pixels = readback.get_mapped_range(..).expect("interface order samples");
                 let data = crate::readback::f32s(&pixels);
-                let expected = 1.0 / (1.0 + (eye.z - 20.0) / (0.875 * (std::f32::consts::FRAC_PI_3 * 0.5).tan()));
                 let row = data[7 * 64..7 * 64 + 8].to_vec();
-                if let Some(previous) = &reference {
-                    assert_eq!(&row, previous, "interface selection must be independent of draw order");
+                match order.as_slice() {
+                    [0] => nearest_reference = Some(row),
+                    [1] => farther_reference = Some(row),
+                    _ => {
+                        let nearest = nearest_reference.as_ref().expect("nearest-sheet reference first");
+                        assert_eq!(&row, nearest, "the nearest interface must win in either draw order");
+                        combined_orders += 1;
+                    }
                 }
-                reference = Some(row);
-                for x in 0..8 {
-                    assert_eq!(data[x], 0.0, "air must not write an interface");
-                    // Clipping a 200 m triangle to this tiny target has sub-mm
-                    // interpolation error, well below the 1 cm sheet spacing.
-                    assert!(
-                        (data[7 * 64 + x] - expected).abs() < 0.0002,
-                        "the nearest interface must win in either order, including before near: delta {delta}, order {order:?}, got {} expected {expected}",
-                        data[7 * 64 + x]
-                    );
+                for sample in data.iter().take(8) {
+                    assert_eq!(*sample, 0.0, "air must not write an interface");
                 }
                 drop(pixels);
                 readback.unmap();
+            }
+            let nearest = nearest_reference.expect("nearest-sheet reference");
+            let farther = farther_reference.expect("farther-sheet reference");
+            assert_eq!(combined_orders, 2);
+            for x in 0..8 {
+                assert!(
+                    nearest[x] > farther[x],
+                    "near sheet must produce greater reverse depth: x {x}, near {}, far {}",
+                    nearest[x],
+                    farther[x]
+                );
             }
         }
     }
