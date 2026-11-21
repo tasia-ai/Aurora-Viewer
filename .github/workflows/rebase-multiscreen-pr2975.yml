@@ -1,164 +1,37 @@
-name: Rebase multiscreen PR 2975 onto upstream Aurora
-
+name: Rebase multiscreen PR 2975 onto latest Aurora
 on:
   push:
-    branches:
-      - automation/upgrade-multiscreen-pr2975
-    paths:
-      - .github/workflows/rebase-multiscreen-pr2975.yml
-
+    branches: [automation/upgrade-multiscreen-pr2975]
+    paths: [.github/workflows/rebase-multiscreen-pr2975.yml]
 permissions:
   contents: write
-
 jobs:
-  update-pr:
+  rebase:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - name: Checkout fork including history
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
-      - name: Set Tasia commit identity and fetch upstream
+      - name: Preview latest cherry-pick conflicts
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name 'Tasia'
-          git config user.email 'tasia@easierit.org'
+          git config user.name Tasia
+          git config user.email tasia@easierit.org
           git remote add upstream https://github.com/Aurora-Viewer/Aurora-Viewer.git
           git fetch upstream main
           git fetch origin feat/native-multimonitor-floaters
-          test "$(git rev-parse origin/feat/native-multimonitor-floaters)" = "fe547bc32e5506e6b683f917374552261958eee0"
-      - name: Prepare latest candidate without touching original PR
-        shell: bash
-        run: |
-          set -euo pipefail
           git checkout -B candidate/multiscreen-2975-latest upstream/main
-          if ! git cherry-pick -x fe547bc32e5506e6b683f917374552261958eee0; then
-            echo "Cherry-pick conflicts detected; resolving ONLY 9 reviewed hunks across 4 files."
-            python3 - <<'PY'
-          import pathlib, re
-          files = [
-              "crates/aurora-viewer/Cargo.toml",
-              "crates/aurora-viewer/src/app.rs",
-              "crates/aurora-viewer/src/main.rs",
-              "crates/aurora-viewer/src/ui/widgets.rs",
-          ]
-          pattern = re.compile(r"(?ms)^<<<<<<< HEAD\n(.*?)^=======\n(.*?)^>>>>>>> [^\n]*\n")
-          counts = [0, 0, 0, 0]
-          for fi, path in enumerate(files):
-              p = pathlib.Path(path)
-              source = p.read_text()
-              def resolve(match):
-                  ours, theirs = match.group(1), match.group(2)
-                  index = counts[fi]
-                  counts[fi] += 1
-                  if fi == 0:
-                      assert "egui-wgpu =" in theirs and not ours.strip()
-                      return theirs
-                  if fi == 1:
-                      if index == 0:
-                          assert "window_display" in theirs and not ours.strip()
-                          return theirs
-                      if index == 1:
-                          assert "let mut full = ctx.run_ui" in ours and "with_event_loop" in theirs
-                          return ours.replace("let mut full = ctx.run_ui(raw, |ui| {", "let mut full = crate::native_viewports::with_event_loop(event_loop, || {\n            ctx.run_ui(raw, |ui| {")
-                      if index == 2:
-                          assert "hide_windows_for_exit" in ours and "native_viewports.shutdown" in theirs
-                          return ours + theirs
-                      if index == 3:
-                          assert "wide_chars::attach" in ours and "native_viewports.window_event" in theirs
-                          return theirs + ours
-                      if index == 4:
-                          assert "RedrawRequested if !self.exit_windows_hidden" in ours and "ScaleFactorChanged" in theirs
-                          return ours
-                  if fi == 2:
-                      assert "mod weather" in ours and "mod window_display" in theirs
-                      return ours + theirs
-                  if fi == 3:
-                      if index == 0:
-                          assert "super::layout::reanchor" in ours and "native_child" in theirs
-                          return """        if native_child {
-                      self.default_pos = egui::Pos2::ZERO;
-                      self.default_size = work.size();
-                  } else {
-                      self.default_size = self.default_size.min(work.size());
-                      self.default_pos = fit_in(work, self.default_pos, self.default_size);
-                      if reset && self.cascade.is_none() {
-                          super::layout::reanchor(ctx, window_id);
-                          ctx.data_mut(|d| d.insert_temp(window_id.with(PLACE_POS), self.default_pos));
-                      }
-                  }
-                  let opening = (!native_child)
-                      .then(|| self.cascade.and_then(|group| cascade::prepare(ctx, window_id, group, egui::Rect::from_min_size(self.default_pos, expanded), work)))
-                      .flatten();
-          """
-                      if index == 1:
-                          assert "title_note_tooltip" in ours and "native_title_drag" in theirs
-                          return ours + "            }\n" + theirs.replace("            if native_child {", "            if native_child {", 1)
-                  raise RuntimeError(f"Unexpected conflict at {path} #{index}")
-              source, n = pattern.subn(resolve, source)
-              assert n == [1, 5, 1, 2][fi], (path, n)
-              if fi == 1:
-                  # The cherry-pick shares the closing braces around the old
-                  # inventory-drop block; restore the outer if before next UI pass.
-                  broken = ("                    library_drop = self.texture_library_drag_input(ui.ctx(), &mut gfx.renderer);\n"
-                            "                }\n"
-                            "                if library_drop.is_none() {")
-                  fixed = ("                    library_drop = self.texture_library_drag_input(ui.ctx(), &mut gfx.renderer);\n"
-                           "                }\n"
-                           "            }\n"
-                           "            if library_drop.is_none() {")
-                  assert source.count(broken) == 1, "Unexpected UI block; refuse blind edit"
-                  source = source.replace(broken, fixed)
-              assert "<<<<<<<" not in source and ">>>>>>> fe547" not in source
-              p.write_text(source)
-          assert counts == [1, 5, 1, 2], counts
-          print("Resolved all expected conflict hunks:", counts)
-
-          PY
-            git add Cargo.lock crates/aurora-viewer/Cargo.toml crates/aurora-viewer/src/app.rs crates/aurora-viewer/src/main.rs crates/aurora-viewer/src/ui/widgets.rs crates/aurora-viewer/src/native_viewports.rs crates/aurora-viewer/src/window_display.rs crates/aurora-viewer/src/settings.rs crates/aurora-viewer/src/settings/backup.rs crates/aurora-viewer/src/ui/chat/popout.rs crates/aurora-viewer/src/ui/options/pages/layout.rs crates/aurora-i18n/locales/en.ftl crates/aurora-i18n/locales/fr.ftl crates/aurora-i18n/locales/ja.ftl
-            echo '===== MERGED UI FRAME ====='
-            sed -n '13095,13180p' crates/aurora-viewer/src/app.rs
-            echo '===== MERGED FLOATER WIDGET ====='
-            sed -n '1270,1325p' crates/aurora-viewer/src/ui/widgets.rs
-            git -c core.editor=true cherry-pick --continue
+          if git cherry-pick -x origin/feat/native-multimonitor-floaters; then
+            echo 'No conflicts'
+          else
+            echo 'Conflict paths:'
+            git diff --name-only --diff-filter=U
+            for f in $(git diff --name-only --diff-filter=U); do
+              echo "::group::$f"
+              grep -n -A 35 -B 15 '^<<<<<<<' "$f" | head -c 30000 || true
+              echo "::endgroup::"
+            done
+            exit 1
           fi
-          git show -s --format='Candidate: %H | author: %an <%ae> | committer: %cn <%ce>' HEAD
-          git diff --check HEAD^ HEAD
-          echo "Candidate commit $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - name: Check syntax and formatting early
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all
-          git add -u
-          git commit --amend --no-edit --author='Tasia <tasia@easierit.org>'
-          cargo fmt --all -- --check
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libgl1-mesa-dev pkg-config libfontconfig1-dev
-      - name: Validate build
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --all -- --check
-          cargo metadata --format-version 1 > /dev/null
-          if ! git diff --quiet -- Cargo.lock; then
-            git add Cargo.lock
-            git commit --amend --no-edit --author='Tasia <tasia@easierit.org>'
-          fi
-          cargo check --locked -p aurora-viewer
-      - name: Publish candidate ONLY (keep original PR untouched for review)
-        shell: bash
-        run: |
-          set -euo pipefail
-          git push origin HEAD:refs/heads/candidate/multiscreen-2975-latest
-          echo "Candidate branch: candidate/multiscreen-2975-latest" >> "$GITHUB_STEP_SUMMARY"
-          echo "Original PR #2975 remains unchanged until candidate tests and conflicts are reviewed." >> "$GITHUB_STEP_SUMMARY"
