@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Preview latest cherry-pick conflicts
+      - name: Cherry-pick and preserve both widget behaviors
         shell: bash
         run: |
           set -euo pipefail
@@ -23,15 +23,72 @@ jobs:
           git fetch upstream main
           git fetch origin feat/native-multimonitor-floaters
           git checkout -B candidate/multiscreen-2975-latest upstream/main
-          if git cherry-pick -x origin/feat/native-multimonitor-floaters; then
-            echo 'No conflicts'
-          else
-            echo 'Conflict paths:'
-            git diff --name-only --diff-filter=U
-            for f in $(git diff --name-only --diff-filter=U); do
-              echo "::group::$f"
-              grep -n -A 35 -B 15 '^<<<<<<<' "$f" | head -c 30000 || true
-              echo "::endgroup::"
-            done
-            exit 1
+          if ! git cherry-pick -x origin/feat/native-multimonitor-floaters; then
+            python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          conflicts = subprocess.check_output(["git", "diff", "--name-only", "--diff-filter=U"], text=True).splitlines()
+          expected = ["crates/aurora-viewer/src/ui/widgets.rs"]
+          assert conflicts == expected, f"Unexpected conflicts: {conflicts}"
+          path = Path(expected[0])
+          src = path.read_text()
+          old = """<<<<<<< HEAD
+                      slot.shown(ctx, response.response.rect, minimized);
+                      if self.headless && headless_close(ctx, p, window_id, &response.response, fill, opacity, self.order) {
+                          close = true;
+          =======
+                      if let Some(slot) = slot.take() {
+                          slot.shown(ctx, response.response.rect, minimized);
+          >>>>>>> 01bb1b43 (feat(ui): native detachable floaters with multi-monitor recovery)
+                      }
+          """
+          new = """            if let Some(slot) = slot.take() {
+                          slot.shown(ctx, response.response.rect, minimized);
+                      }
+                      if self.headless && headless_close(ctx, p, window_id, &response.response, fill, opacity, self.order) {
+                          close = true;
+                      }
+          """
+          # YAML block indentation is stripped before execution; old/new string lines
+          # above have identical indent in their template, matching Git's conflicted text.
+          assert src.count(old) == 1, "Widget conflict no longer matches reviewed hunk"
+          src = src.replace(old, new)
+          assert "<<<<<<<" not in src and ">>>>>>>" not in src
+          path.write_text(src)
+          print("Merged optional layout slot and upstream headless-close behavior")
+          PY
+            git add crates/aurora-viewer/src/ui/widgets.rs
+            git -c core.editor=true cherry-pick --continue
           fi
+          git diff --check HEAD^ HEAD
+          git show -s --format='PRE-BUILD CANDIDATE %H' HEAD
+      - name: Install stable Rust and tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git add -u
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit --author='Tasia <tasia@easierit.org>'
+          fi
+          cargo fmt --all -- --check
+          git diff --check HEAD^ HEAD
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libgl1-mesa-dev pkg-config libfontconfig1-dev
+      - name: Check viewer
+        run: |
+          cargo metadata --format-version 1 > /dev/null
+          cargo check --locked -p aurora-viewer
+      - name: Report candidate and try publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "VALIDATED_CANDIDATE_SHA=$(git rev-parse HEAD)"
+          git show -s --format='Candidate commit %H | author %an <%ae>' HEAD
+          git push origin HEAD:refs/heads/candidate/multiscreen-2975-latest || echo 'Push denied; use GitHub API to create/update candidate ref from validated SHA'
