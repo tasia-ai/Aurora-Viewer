@@ -1,5 +1,9 @@
 # Aurora Viewer architecture
 
+`docs/extension-platform/ADR-001.md` records reconnaissance and the Wasmi 2.0.2 runtime decision for the proposed generic extension platform. `aurora-extension-api` defines the versioned guest/event contract, `aurora-extension-sdk` provides generic guest helpers, and `aurora-extension-runtime` validates `.ext` ZIP/manifest data and applies the import-free Wasmi sandbox and in-memory permission manager. The core contribution will contain only the generic API, package loader, permission broker, sandbox, plugin manager and tests; production plugins such as AITranslator are separate projects. `aurora-extension-sdk/examples/demo_extension.rs` is a neutral offline fixture: it registers a host-rendered panel and requests a notification only after the user clicks its button; its manifest requests no chat, network, filesystem or secret access.
+
+
+
 `imports/file_picker.rs` owns pending native selections and their import-window
 identity. Closing that window cancels and retires the request without discarding
 existing drafts; request ids reject late replies. Native dialogs run on dedicated

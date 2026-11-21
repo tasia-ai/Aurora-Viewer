@@ -1001,6 +1001,7 @@ pub struct App {
     region_tracker_ui: ui::region_tracker::RegionTrackerUi,
     map_tiles: ui::map_tiles::MapTiles,
     options_ui: ui::options::OptionsUi,
+    extension_host: crate::extension_host::Service,
     grids_ui: ui::grids::Manager,
     audio_ui: ui::audio::AudioUi,
     /// The nearby media panel under the media button (app/nearby_media.rs).
@@ -2175,6 +2176,7 @@ impl App {
             region_tracker_ui: Default::default(),
             map_tiles: ui::map_tiles::MapTiles::new(),
             options_ui: Default::default(),
+            extension_host: crate::extension_host::Service::new(crate::settings::config_dir().join("extensions")),
             grids_ui: Default::default(),
             audio_ui: Default::default(),
             nearby_media: Default::default(),
@@ -7091,6 +7093,41 @@ impl App {
         self.egui_ctx.request_repaint();
     }
 
+    fn process_extension_events(&mut self) {
+        for request in self.world.take_extension_chat_events() {
+            let _ = self
+                .extension_host
+                .submit(crate::extension_host::Command::NearbyChat(request.event));
+        }
+        for batch in self.extension_host.take_actions() {
+            let request_message_id = batch.message_id;
+            for action in batch.actions {
+                match action {
+                    aurora_extension_api::ExtensionAction::AnnotateChat { message_id, text } => {
+                        if request_message_id == Some(message_id) {
+                            self.world.annotate_extension_chat(message_id, batch.extension_id.clone(), text);
+                        } else {
+                            log::warn!("discarded extension annotation not bound to its triggering chat event");
+                        }
+                    }
+                    aurora_extension_api::ExtensionAction::ShowNotification { title, body } => {
+                        self.world.ask_attention(
+                            crate::world::attention::Cause::Notice,
+                            Some(crate::world::attention::Notice {
+                                title,
+                                body,
+                                open: crate::world::attention::Open::NearbyChat,
+                            }),
+                        );
+                    }
+                    aurora_extension_api::ExtensionAction::RegisterPanel { .. } => {
+                        // The worker stores validated panel declarations for the native manager UI.
+                    }
+                }
+            }
+        }
+    }
+
     fn pump_network_events(&mut self, t_ev: Instant) {
         while let Ok((sent, ev)) = self.net.events.try_recv() {
             // (`sent`: when the session read the datagram, the time its
@@ -10635,6 +10672,7 @@ impl App {
         if !still {
             self.pump_network_events(t_ev);
         }
+        self.process_extension_events();
         self.poll_inventory_offers();
         self.net_profile.events_left(self.net.events.len());
         let corrections = self.world.agent.take_corrections();
@@ -17642,8 +17680,14 @@ impl App {
         self.options_ui.joystick = self.joystick.snapshot.clone();
         self.options_ui.game_control = crate::game_control::View::of(&self.game_control.engine);
         self.options_ui.flycam_active = self.joystick.active;
+        self.options_ui.extensions = self.extension_host.snapshot();
         let before_camera = self.settings.camera.clone();
         let mut res = ui::options::show(ctx, p, &self.skin.icons, &mut self.settings, &mut self.options_ui, &mut open);
+        if let Some(command) = res.extension_command.take()
+            && !self.extension_host.submit(command)
+        {
+            self.options_ui.extensions.status = Some(aurora_i18n::tr!("extensions-manager-busy").to_owned());
+        }
         if res.show_contacts_tab_on {
             self.dock_contacts();
         }
