@@ -4519,6 +4519,7 @@ ui-options-disable-glass-help = ウィンドウ、バー、メニュー、ダイ
 ui-options-interface-colors = インターフェースの色
 ui-options-opacity = 不透明度
 ui-options-opacity-help = ウィンドウとバーの背景がワールドを隠す度合いです。文字と画像はそのまま表示されます。
+ui-window-opacity = ウィンドウの不透明度
 ui-options-opacity-active = アクティブなウィンドウ
 ui-options-opacity-active-hint = 最後にクリックしたウィンドウ、または入力中のウィンドウです。会話には専用のスライダーがあります。
 ui-options-opacity-inactive = 非アクティブなウィンドウ

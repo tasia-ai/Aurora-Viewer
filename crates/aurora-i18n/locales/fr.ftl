@@ -4587,6 +4587,7 @@ ui-options-disable-glass-help = Les fenêtres, les barres, les menus et les boî
 ui-options-interface-colors = Couleurs de l’interface
 ui-options-opacity = Opacité
 ui-options-opacity-help = À quel point le fond des fenêtres et des barres cache le monde. Le texte et les images restent pleins.
+ui-window-opacity = Opacité de la fenêtre
 ui-options-opacity-active = Fenêtre active
 ui-options-opacity-active-hint = La dernière fenêtre cliquée, ou celle où vous écrivez. Conversations a son propre curseur.
 ui-options-opacity-inactive = Fenêtres inactives

@@ -4584,6 +4584,7 @@ ui-options-disable-glass-help = Windows, bars, menus and dialogs stay opaque, wi
 ui-options-interface-colors = Interface colors
 ui-options-opacity = Opacity
 ui-options-opacity-help = How much of the background of windows and bars hides the world. Text and pictures stay solid.
+ui-window-opacity = Window opacity
 ui-options-opacity-active = Focused window
 ui-options-opacity-active-hint = The window you last clicked or are typing in. Conversations has its own slider.
 ui-options-opacity-inactive = Unfocused windows

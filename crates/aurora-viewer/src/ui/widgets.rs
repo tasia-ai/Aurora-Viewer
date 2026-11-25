@@ -1456,6 +1456,7 @@ impl<'a> Floater<'a> {
             } else {
                 header_content(ui).response
             };
+            super::surface_opacity::window_menu(ctx, &header, p, window_id, opacity);
             // The header layout closure is no longer used; release its
             // mutable borrow of the inline name editor before hit-testing.
             drop(header_content);

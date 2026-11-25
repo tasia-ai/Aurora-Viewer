@@ -183,6 +183,58 @@ fn level(o: &Opacity, kind: Kind, focused: bool) -> f32 {
     }
 }
 
+/// The saved opacity of one floater. Its egui id distinguishes this window
+/// from every other window, including other conversations.
+fn window_override(ctx: &egui::Context, window: egui::Id) -> Option<f32> {
+    ctx.data_mut(|d| d.get_persisted::<f32>(window.with("surface_opacity_override")))
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 1.0))
+}
+
+fn set_window_override(ctx: &egui::Context, window: egui::Id, value: Option<f32>) {
+    let id = window.with("surface_opacity_override");
+    ctx.data_mut(|d| match value {
+        Some(value) if value.is_finite() => d.insert_persisted(id, value.clamp(0.0, 1.0)),
+        _ => {
+            d.remove::<f32>(id);
+        }
+    });
+}
+
+fn glass_disabled() -> bool {
+    crate::high_contrast::current() || crate::disable_glass::current()
+}
+
+fn effective_window_opacity(global: f32, saved: Option<f32>, glass_disabled: bool) -> f32 {
+    if glass_disabled {
+        1.0
+    } else {
+        saved.unwrap_or(global)
+    }
+}
+
+/// A per-window opacity control on the floater's title-bar context menu.
+/// The existing surface fading leaves text, icons and pictures solid.
+pub(crate) fn window_menu(ctx: &egui::Context, response: &egui::Response, p: &Palette, window: egui::Id, opacity: f32) {
+    let saved = window_override(ctx, window);
+    let mut percent = (saved.unwrap_or(opacity).clamp(0.0, 1.0) * 100.0).round() as u32;
+    let enabled = !glass_disabled();
+    super::menu::context_menu(response, p, |ui| {
+        ui.set_min_width(220.0);
+        ui.label(aurora_i18n::tr!("ui-window-opacity"));
+        let changed = ui
+            .add_enabled(enabled, egui::Slider::new(&mut percent, 0..=100).suffix("%"))
+            .changed();
+        if changed {
+            set_window_override(ctx, window, Some(percent as f32 / 100.0));
+        }
+        super::menu::separator(ui, p);
+        if super::menu::item_if(ui, p, "rotate-ccw", aurora_i18n::tr!("common-reset"), saved.is_some()) {
+            set_window_override(ctx, window, None);
+        }
+    });
+}
+
 /// What happened to the window this frame, for the focus.
 #[derive(Debug, Clone, Copy, Default)]
 struct FocusEvents {
@@ -242,11 +294,9 @@ pub fn window(ctx: &egui::Context, id: &str, chat: bool) -> f32 {
         d.insert_temp(holder_id, holder);
         holder
     });
-    ctx.animate_value_with_time(
-        window.with("opacity"),
-        level(&current(), kind(id, chat), holder == Some(window)),
-        FOCUS_FADE,
-    )
+    let global = level(&current(), kind(id, chat), holder == Some(window));
+    let target = effective_window_opacity(global, window_override(ctx, window), glass_disabled());
+    ctx.animate_value_with_time(window.with("opacity"), target, FOCUS_FADE)
 }
 
 /// The fill of a window or bar frame: under glass the tint is drawn over the
@@ -399,6 +449,42 @@ mod tests {
         assert_eq!(kind("a_popped_out_chat", true), Kind::Detached);
         assert_eq!(kind(crate::ui::controls::CLASSIC_CAMERA, false), Kind::Plain);
         assert_eq!(kind("inventory", false), Kind::Plain);
+    }
+
+    #[test]
+    fn window_opacity_is_independent_persisted_and_resettable() {
+        let ctx = egui::Context::default();
+        let first = egui::Id::unique("opacity_first_window");
+        let second = egui::Id::unique("opacity_second_window");
+        set_window_override(&ctx, first, Some(0.42));
+        assert_eq!(window_override(&ctx, first), Some(0.42));
+        assert_eq!(window_override(&ctx, second), None, "another floater is unaffected");
+
+        let serialized = ron::to_string(&ctx.memory(|memory| memory.clone())).expect("serialize UI layout");
+        let memory: egui::Memory = ron::from_str(&serialized).expect("restore UI layout");
+        let restored = egui::Context::default();
+        restored.memory_mut(|m| *m = memory);
+        assert_eq!(window_override(&restored, first), Some(0.42));
+
+        set_window_override(&restored, first, None);
+        assert_eq!(window_override(&restored, first), None, "reset returns to global opacity");
+    }
+
+    #[test]
+    fn window_opacity_is_clamped_and_non_finite_saved_values_are_ignored() {
+        let ctx = egui::Context::default();
+        let window = egui::Id::unique("opacity_clamp_window");
+        set_window_override(&ctx, window, Some(2.0));
+        assert_eq!(window_override(&ctx, window), Some(1.0));
+        set_window_override(&ctx, window, Some(f32::NAN));
+        assert_eq!(window_override(&ctx, window), None);
+    }
+
+    #[test]
+    fn high_contrast_and_disable_glass_override_each_window_choice() {
+        assert_eq!(effective_window_opacity(0.7, Some(0.3), false), 0.3);
+        assert_eq!(effective_window_opacity(0.7, None, false), 0.7);
+        assert_eq!(effective_window_opacity(0.7, Some(0.3), true), 1.0);
     }
 
     #[test]
