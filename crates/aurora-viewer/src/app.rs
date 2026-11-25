@@ -19091,6 +19091,7 @@ impl App {
                 // their room, `thumbnails::show` draws them below
                 let thumbnails = if self.demo { ui::chat::thumbnails::demo_place() } else { None };
                 ui::chat::thumbnails::prepare(
+                    &ctx,
                     &mut self.chat_ui,
                     &self.world,
                     thumbnails.unwrap_or(self.settings.chat_thumbnails),

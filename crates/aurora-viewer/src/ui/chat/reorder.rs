@@ -101,6 +101,10 @@ impl Demo {
 #[derive(Default)]
 pub(super) struct State {
     order: Vec<Uuid>,
+    /// A drag makes this order the user's choice. New sessions then append
+    /// without reapplying the automatic tab order.
+    manual: bool,
+    loaded: bool,
     grab: Option<Grab>,
     rows: Vec<Row>,
     /// The nearby chat's entry this frame.
@@ -129,21 +133,7 @@ pub(super) struct State {
 
 impl State {
     pub fn begin(&mut self, ctx: &egui::Context, world: &World) {
-        let mut remaining: HashSet<_> = world.social.ims.iter().map(|s| s.other).collect();
-        self.order.retain(|id| remaining.remove(id));
-        let new = world.social.ims.iter().map(|s| s.other).filter(|id| remaining.remove(id));
-        // FSAutoOrderIMTabs: among the tabs of its kind
-        // (`conversation_options::insertion`), else after the others
-        let options = super::conversation_options::current();
-        if options.auto_order {
-            for id in new {
-                let kinds: Vec<_> = self.order.iter().map(|o| super::sidebar::kind(world, o)).collect();
-                let at = super::conversation_options::insertion(&kinds, super::sidebar::kind(world, &id), options.order, options.new_first);
-                self.order.insert(at, id);
-            }
-        } else {
-            self.order.extend(new);
-        }
+        self.sync_order(ctx, world);
         let pass = ctx.cumulative_pass_nr_for(egui::ViewportId::ROOT);
         if self.laid_out.is_none_or(|last| last + 1 < pass) {
             self.offsets.clear();
@@ -168,6 +158,73 @@ impl State {
         self.rows.clear();
         self.local = None;
         self.seeding = std::mem::take(&mut self.seed);
+    }
+
+    /// Restore and reconcile the display order before either the list or its
+    /// independent thumbnail dock is drawn. `ui_layout.ron` keeps the user's
+    /// manual order through a restart, as it does window placement.
+    pub(super) fn sync_order(&mut self, ctx: &egui::Context, world: &World) {
+        self.load_saved_order(ctx);
+
+        let active: HashSet<_> = world.social.ims.iter().map(|s| s.other).collect();
+        let old = self.order.clone();
+        if !self.manual {
+            let mut remaining = active.clone();
+            self.order.retain(|id| remaining.remove(id));
+        }
+        let mut known: HashSet<_> = self.order.iter().copied().collect();
+        let new: Vec<_> = world.social.ims.iter().map(|s| s.other).filter(|id| known.insert(*id)).collect();
+        if self.manual {
+            append_missing(&mut self.order, new);
+            trim_saved_order(&mut self.order, &active);
+        } else {
+            // FSAutoOrderIMTabs: among the tabs of its kind
+            // (`conversation_options::insertion`), else after the others.
+            let options = super::conversation_options::current();
+            if options.auto_order {
+                for id in new {
+                    let kinds: Vec<_> = self.order.iter().map(|o| super::sidebar::kind(world, o)).collect();
+                    let at = super::conversation_options::insertion(
+                        &kinds,
+                        super::sidebar::kind(world, &id),
+                        options.order,
+                        options.new_first,
+                    );
+                    self.order.insert(at, id);
+                }
+            } else {
+                self.order.extend(new);
+            }
+        }
+        if self.manual && self.order != old {
+            self.save_order(ctx);
+        }
+    }
+
+    fn load_saved_order(&mut self, ctx: &egui::Context) {
+        if self.loaded {
+            return;
+        }
+        self.order = ctx
+            .data_mut(|d| d.get_persisted::<Vec<Uuid>>(saved_order_id()))
+            .map(unique_order)
+            .unwrap_or_default();
+        self.manual = ctx.data_mut(|d| d.get_persisted::<bool>(manual_order_id())).unwrap_or(false);
+        self.loaded = true;
+    }
+
+    fn save_order(&self, ctx: &egui::Context) {
+        ctx.data_mut(|d| {
+            d.insert_persisted(saved_order_id(), self.order.clone());
+            d.insert_persisted(manual_order_id(), self.manual);
+        });
+    }
+
+    pub(super) fn rekey(&mut self, ctx: &egui::Context, from: Uuid, to: Uuid) {
+        self.load_saved_order(ctx);
+        if rekey_order(&mut self.order, from, to) && self.manual {
+            self.save_order(ctx);
+        }
     }
 
     fn cancel(&mut self) {
@@ -463,7 +520,7 @@ impl State {
             } else {
                 self.release(grab.conversation.zip(at.map(|at| at - grab.offset)));
                 if let (Some(Landing::Move(target, after)), Some(id)) = (landing, grab.conversation) {
-                    self.move_to(id, target, after);
+                    self.move_to(ui.ctx(), id, target, after);
                 }
                 None
             };
@@ -492,17 +549,81 @@ impl State {
         None
     }
 
-    fn move_to(&mut self, source: Uuid, target: Uuid, after: bool) {
-        let Some(from) = self.order.iter().position(|id| *id == source) else {
-            return;
-        };
-        self.order.remove(from);
-        if let Some(to) = self.order.iter().position(|id| *id == target) {
-            self.order.insert(to + usize::from(after), source);
-        } else {
-            self.order.insert(from, source);
+    fn move_to(&mut self, ctx: &egui::Context, source: Uuid, target: Uuid, after: bool) {
+        if move_item(&mut self.order, source, target, after) {
+            self.manual = true;
+            self.save_order(ctx);
         }
     }
+}
+
+fn saved_order_id() -> egui::Id {
+    egui::Id::unique("conversation_list_manual_order")
+}
+
+fn manual_order_id() -> egui::Id {
+    egui::Id::unique("conversation_list_manual_order_enabled")
+}
+
+fn unique_order(order: Vec<Uuid>) -> Vec<Uuid> {
+    let mut seen = HashSet::new();
+    order.into_iter().filter(|id| seen.insert(*id)).collect()
+}
+
+fn rekey_order(order: &mut Vec<Uuid>, from: Uuid, to: Uuid) -> bool {
+    if from == to {
+        return false;
+    }
+    let Some(at) = order.iter().position(|id| *id == from) else {
+        return false;
+    };
+    order.remove(at);
+    if let Some(existing) = order.iter().position(|id| *id == to) {
+        order.remove(existing);
+    }
+    let insertion = at.min(order.len());
+    order.insert(insertion, to);
+    true
+}
+
+fn append_missing(order: &mut Vec<Uuid>, new: impl IntoIterator<Item = Uuid>) {
+    let mut known: HashSet<_> = order.iter().copied().collect();
+    for id in new {
+        if known.insert(id) {
+            order.push(id);
+        }
+    }
+}
+
+/// Keep every open session and the most recently closed session ids. A user
+/// who reopens one of the latter gets its chosen place back, without keeping
+/// an unbounded history in the layout file.
+fn trim_saved_order(order: &mut Vec<Uuid>, active: &HashSet<Uuid>) {
+    const LIMIT: usize = 512;
+    while order.len() > LIMIT {
+        let Some(stale) = order.iter().position(|id| !active.contains(id)) else { break };
+        order.remove(stale);
+    }
+}
+
+fn move_item(order: &mut Vec<Uuid>, source: Uuid, target: Uuid, after: bool) -> bool {
+    if source == target {
+        return false;
+    }
+    let Some(from) = order.iter().position(|id| *id == source) else {
+        return false;
+    };
+    order.remove(from);
+    let Some(to) = order.iter().position(|id| *id == target).map(|to| to + usize::from(after)) else {
+        order.insert(from, source);
+        return false;
+    };
+    if to == from {
+        order.insert(from, source);
+        return false;
+    }
+    order.insert(to, source);
+    true
 }
 
 /// How quickly an entry eases to its target (per second, exponential):
@@ -681,7 +802,7 @@ mod tests {
         // B drawn a place up (making way), A's card let go at (30, 190)
         st.rows[1].drawn = egui::pos2(10.0, 100.0);
         st.release(Some((A, egui::pos2(30.0, 190.0))));
-        st.move_to(A, C, true);
+        st.move_to(&egui::Context::default(), A, C, true);
         assert_eq!(st.order, vec![B, C, A]);
         st.grab = None;
         let mut frames = crate::ui::widgets::elide_tests::Frames::new();
@@ -722,6 +843,66 @@ mod tests {
         st.grab = Some(grab);
         assert_eq!(st.landing(grab, egui::pos2(50.0, 170.0), CLIP), None);
         assert!(st.dragging(None) && !st.dragging(Some(A)));
+    }
+
+    #[test]
+    fn a_manual_order_survives_layout_restore_and_new_sessions_append() {
+        let ctx = egui::Context::default();
+        let mut st = State {
+            order: vec![A, B, C],
+            loaded: true,
+            ..State::default()
+        };
+        st.move_to(&ctx, C, A, false);
+        assert!(st.manual);
+        assert_eq!(st.order, vec![C, A, B]);
+
+        let saved = ron::to_string(&ctx.memory(|m| m.clone())).expect("serialize UI preferences");
+        let memory: egui::Memory = ron::from_str(&saved).expect("restore UI preferences");
+        let restored_ctx = egui::Context::default();
+        restored_ctx.memory_mut(|m| *m = memory);
+        let mut restored = State::default();
+        restored.load_saved_order(&restored_ctx);
+        assert!(restored.manual);
+        assert_eq!(restored.order, vec![C, A, B]);
+
+        // A newly received session is added without moving the user's rows;
+        // a later message for A does not add or move it either.
+        let d = Uuid::from_u128(4);
+        append_missing(&mut restored.order, [d, A]);
+        assert_eq!(restored.order, vec![C, A, B, d]);
+    }
+
+    #[test]
+    fn a_drop_on_the_same_row_or_a_missing_row_does_not_change_the_order() {
+        let mut order = vec![A, B, C];
+        assert!(!move_item(&mut order, B, B, true));
+        assert!(!move_item(&mut order, B, Uuid::from_u128(4), false));
+        assert_eq!(order, vec![A, B, C]);
+        assert!(move_item(&mut order, A, C, true));
+        assert_eq!(order, vec![B, C, A]);
+    }
+
+    #[test]
+    fn a_rekeyed_conference_keeps_its_manual_list_position() {
+        let ctx = egui::Context::default();
+        let mut st = State {
+            order: vec![A, B, C],
+            manual: true,
+            loaded: true,
+            ..State::default()
+        };
+        st.save_order(&ctx);
+        st.rekey(&ctx, B, Uuid::from_u128(4));
+        assert_eq!(st.order, vec![A, Uuid::from_u128(4), C]);
+        assert_eq!(ctx.data_mut(|d| d.get_persisted::<Vec<Uuid>>(saved_order_id())), Some(st.order.clone()));
+
+        // The assigned ID can already have been appended from World::social
+        // earlier in this same frame; it must not steal the temporary ID's slot.
+        let assigned = Uuid::from_u128(5);
+        let mut order = vec![A, B, C, assigned];
+        assert!(rekey_order(&mut order, B, assigned));
+        assert_eq!(order, vec![A, assigned, C]);
     }
 
     #[test]

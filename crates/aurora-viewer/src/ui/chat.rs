@@ -551,6 +551,8 @@ impl ChatUi {
             self.picker_window = Some(Some(new));
         }
         self.popped.rekey(from, to);
+        self.reorder.rekey(ctx, from, to);
+        self.thumbnails.rekey(ctx, from, to);
         if let Some(draft) = self.drafts.remove(&old) {
             self.drafts.insert(new, draft);
         }
