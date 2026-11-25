@@ -539,6 +539,7 @@ mod tests {
                     menu: None,
                     bubbles: Some(true),
                     previews: None,
+                    texture_preview: None,
                     moderators: None,
                 };
                 draw(ui, &mut env, &line, look, None, true);

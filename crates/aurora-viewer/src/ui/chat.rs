@@ -3349,6 +3349,7 @@ struct Lines<'a> {
     icons: &'a super::icons::Icons,
     emoji: &'a mut super::emoji::Emoji,
     pics: &'a HashMap<uuid::Uuid, egui::TextureHandle>,
+    images: &'a HashMap<uuid::Uuid, egui::TextureHandle>,
     world: &'a World,
     own_name: &'a str,
     /// The height they take.
@@ -3370,6 +3371,7 @@ fn conversation_lines(ui: &mut egui::Ui, p: &Palette, l: Lines, st: &mut ChatUi,
         icons,
         emoji,
         pics,
+        images,
         world: w,
         own_name,
         height,
@@ -3426,6 +3428,7 @@ fn conversation_lines(ui: &mut egui::Ui, p: &Palette, l: Lines, st: &mut ChatUi,
             Rows::Thread(_) => None,
         },
         previews: Some(&mut st.previews),
+        texture_preview: Some((images, &mut st.wanted_images)),
         moderators: st.selected.and_then(|id| w.groups.sessions.get(&id)).map(|s| &s.moderators),
     };
     let wash = find::wash(p);
@@ -3626,6 +3629,8 @@ pub(crate) struct LineEnv<'a> {
     /// The cards under live links in all conversation styles; None in the
     /// History window and the on-screen chat.
     pub previews: Option<&'a mut previews::Previews>,
+    /// Shared UI images and the request queue for texture thumbnails.
+    pub texture_preview: Option<(&'a HashMap<uuid::Uuid, egui::TextureHandle>, &'a mut HashSet<uuid::Uuid>)>,
     /// The moderators of the conversation drawn (a group's, a
     /// conference's), whose lines take their style
     /// (`conversation_options::moderator`); None elsewhere.
@@ -4378,7 +4383,7 @@ pub fn show(
                 return;
             }
             // ---- conversation pane
-            ui.vertical(|ui| classic_pane(ui, p, icons, emoji, pics, gestures, world, st, &mut actions, h, &own_name));
+            ui.vertical(|ui| classic_pane(ui, p, icons, emoji, pics, images, gestures, world, st, &mut actions, h, &own_name));
         });
         if !st.contacts && !minimized {
             press_focuses_field(ui, focus_before, egui::Id::unique(("conv_input", st.selected)));
@@ -4474,6 +4479,7 @@ fn classic_pane(
     icons: &super::icons::Icons,
     emoji: &mut super::emoji::Emoji,
     pics: &HashMap<uuid::Uuid, egui::TextureHandle>,
+    images: &HashMap<uuid::Uuid, egui::TextureHandle>,
     gestures: &crate::gestures::Manager,
     world: &mut World,
     st: &mut ChatUi,
@@ -4568,6 +4574,7 @@ fn classic_pane(
                 icons,
                 emoji,
                 pics,
+                images,
                 world: w,
                 own_name,
                 height: lines_h,
@@ -8353,6 +8360,7 @@ mod tests {
                         menu: None,
                         bubbles: (renderer == 2).then_some(true),
                         previews: None,
+                        texture_preview: None,
                         moderators: None,
                     };
                     let look = view::Look {

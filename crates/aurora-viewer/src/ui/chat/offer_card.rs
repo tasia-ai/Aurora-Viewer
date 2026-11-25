@@ -242,6 +242,7 @@ mod tests {
                     menu: None,
                     bubbles: Some(false),
                     previews: None,
+                    texture_preview: None,
                     moderators: None,
                 };
                 if bubbles {

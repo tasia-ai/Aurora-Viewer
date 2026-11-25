@@ -790,6 +790,49 @@ pub(super) fn text<'a>(pv: Option<&Previews>, line: &ChatLine, text: &'a str, wi
 
 /// The cards of a message, under its text: one per link that gets one.
 pub(super) fn cards(ui: &mut egui::Ui, env: &mut LineEnv, line: &ChatLine, text: &str) {
+    let p = env.p;
+    // A canonical texture UUID shared in a live group message gets a small
+    // local image below its text. The message remains the UUID itself; the
+    // click opens the same full-resolution preview as the link.
+    let texture = env
+        .previews
+        .as_ref()
+        .filter(|pv| pv.place == Place::Group && line.origin == Origin::Live)
+        .and_then(|_| match segments(text).as_slice() {
+            [Seg::App(_, crate::slapp::AppLink::Texture(asset))] => Some(*asset),
+            _ => None,
+        });
+    if let Some(asset) = texture
+        && let Some((images, wanted_images)) = env.texture_preview.as_mut()
+    {
+        let images = *images;
+        let wanted_images = &mut **wanted_images;
+        wanted_images.insert(asset);
+        ui.add_space(4.0);
+        let response = if let Some(image) = images.get(&asset) {
+            let source = image.size_vec2().max(Vec2::ONE);
+            let scale = (128.0 / source.x.max(source.y)).min(1.0);
+            let size = (source * scale).max(Vec2::ONE);
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+            egui::Image::new(image)
+                .corner_radius(ui.visuals().window_corner_radius)
+                .fit_to_exact_size(size)
+                .paint_at(ui, rect);
+            response
+        } else {
+            placeholder(ui, p, Vec2::new(128.0, 96.0))
+        };
+        if response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(aurora_i18n::tr!("texture-library-preview"))
+            .clicked()
+        {
+            crate::ui::context::request(
+                ui.ctx(),
+                crate::ui::context::CtxAction::AppLink(crate::slapp::AppLink::Texture(asset)),
+            );
+        }
+    }
     let Some(pv) = env.previews.as_deref_mut() else {
         return;
     };
@@ -798,7 +841,6 @@ pub(super) fn cards(ui: &mut egui::Ui, env: &mut LineEnv, line: &ChatLine, text:
     if line.origin != Origin::Live {
         return;
     }
-    let p = env.p;
     for url in links(text) {
         let Some((target, start)) = lp::decide(&pv.settings, pv.place, sender(line), &url) else {
             continue;

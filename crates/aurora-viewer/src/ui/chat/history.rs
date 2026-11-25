@@ -578,6 +578,7 @@ impl HistoryUi {
             menu: Some(menu),
             bubbles: None,
             previews: None,
+            texture_preview: None,
             moderators: None,
         };
         let wash = find::wash(p);

@@ -362,6 +362,7 @@ pub(super) fn pane(
                 icons,
                 emoji,
                 pics,
+                images,
                 world: w,
                 own_name: &own_name,
                 height: lines_h,

@@ -347,6 +347,7 @@ pub(super) mod tests {
                     menu: None,
                     bubbles: style,
                     previews: None,
+                    texture_preview: None,
                     moderators: None,
                 };
                 super::super::draw_line(ui, &mut env, &said, look, None);
@@ -483,6 +484,7 @@ pub(super) mod tests {
                                 menu: None,
                                 bubbles: None,
                                 previews: None,
+                                texture_preview: None,
                                 moderators: None,
                             };
                             let place = Place {
