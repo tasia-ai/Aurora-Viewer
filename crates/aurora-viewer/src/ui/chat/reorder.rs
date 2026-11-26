@@ -184,12 +184,8 @@ impl State {
             if options.auto_order {
                 for id in new {
                     let kinds: Vec<_> = self.order.iter().map(|o| super::sidebar::kind(world, o)).collect();
-                    let at = super::conversation_options::insertion(
-                        &kinds,
-                        super::sidebar::kind(world, &id),
-                        options.order,
-                        options.new_first,
-                    );
+                    let at =
+                        super::conversation_options::insertion(&kinds, super::sidebar::kind(world, &id), options.order, options.new_first);
                     self.order.insert(at, id);
                 }
             } else {
@@ -601,7 +597,9 @@ fn append_missing(order: &mut Vec<Uuid>, new: impl IntoIterator<Item = Uuid>) {
 fn trim_saved_order(order: &mut Vec<Uuid>, active: &HashSet<Uuid>) {
     const LIMIT: usize = 512;
     while order.len() > LIMIT {
-        let Some(stale) = order.iter().position(|id| !active.contains(id)) else { break };
+        let Some(stale) = order.iter().position(|id| !active.contains(id)) else {
+            break;
+        };
         order.remove(stale);
     }
 }
@@ -895,7 +893,10 @@ mod tests {
         st.save_order(&ctx);
         st.rekey(&ctx, B, Uuid::from_u128(4));
         assert_eq!(st.order, vec![A, Uuid::from_u128(4), C]);
-        assert_eq!(ctx.data_mut(|d| d.get_persisted::<Vec<Uuid>>(saved_order_id())), Some(st.order.clone()));
+        assert_eq!(
+            ctx.data_mut(|d| d.get_persisted::<Vec<Uuid>>(saved_order_id())),
+            Some(st.order.clone())
+        );
 
         // The assigned ID can already have been appended from World::social
         // earlier in this same frame; it must not steal the temporary ID's slot.

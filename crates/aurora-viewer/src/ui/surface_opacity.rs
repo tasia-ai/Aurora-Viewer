@@ -206,11 +206,7 @@ fn glass_disabled() -> bool {
 }
 
 fn effective_window_opacity(global: f32, saved: Option<f32>, glass_disabled: bool) -> f32 {
-    if glass_disabled {
-        1.0
-    } else {
-        saved.unwrap_or(global)
-    }
+    if glass_disabled { 1.0 } else { saved.unwrap_or(global) }
 }
 
 /// A per-window opacity control on the floater's title-bar context menu.

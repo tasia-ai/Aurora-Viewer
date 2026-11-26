@@ -214,7 +214,9 @@ impl Thumbnails {
         }
         let saved = ctx.data_mut(|d| d.get_persisted::<Vec<Uuid>>(order_id()));
         let first_load = saved.is_none();
-        self.order = saved.map(unique_order).unwrap_or_else(|| sessions.iter().map(|(id, _)| *id).collect());
+        self.order = saved
+            .map(unique_order)
+            .unwrap_or_else(|| sessions.iter().map(|(id, _)| *id).collect());
         self.manual_order = ctx.data_mut(|d| d.get_persisted::<bool>(manual_order_id())).unwrap_or(false);
         self.order_loaded = true;
         first_load
@@ -266,7 +268,11 @@ impl Thumbnails {
             let id = if id == from { to } else { id };
             unread.entry(id).or_insert(count);
         }
-        self.items = self.order.iter().filter_map(|id| unread.get(id).map(|count| (*id, *count))).collect();
+        self.items = self
+            .order
+            .iter()
+            .filter_map(|id| unread.get(id).map(|count| (*id, *count)))
+            .collect();
         self.save_order(ctx);
     }
 }
@@ -274,7 +280,9 @@ impl Thumbnails {
 fn trim_dock_order(order: &mut Vec<Uuid>, live: &std::collections::HashSet<Uuid>) {
     const LIMIT: usize = 512;
     while order.len() > LIMIT {
-        let Some(stale) = order.iter().position(|id| !live.contains(id)) else { break };
+        let Some(stale) = order.iter().position(|id| !live.contains(id)) else {
+            break;
+        };
         order.remove(stale);
     }
 }
