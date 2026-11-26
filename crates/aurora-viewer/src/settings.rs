@@ -296,6 +296,15 @@ pub enum WorldMapStyle {
     Legacy,
 }
 
+/// How the world map is presented. The current map remains the 2D default;
+/// the 3D renderer must explicitly support the mode before it is exposed in UI.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WorldMapProjection {
+    #[default]
+    Flat,
+    Terrain3d,
+}
+
 /// The Destinations window: Aurora's own list of the guide's places
 /// (`ui/destinations/aurora.rs`, the default), or the guide's web page as
 /// the Legacy Viewer shows it (Preferences › Aurora). A grid whose guide is
@@ -4369,6 +4378,16 @@ pub struct MapSettings {
     pub mini_double_click: u8,
     /// MapScale: world map pixels per region.
     pub world_scale: f32,
+    /// Saved projection preference; 2D remains the only rendered mode until
+    /// the cinematic map renderer is connected to the world-map window.
+    pub world_projection: WorldMapProjection,
+    /// Explicit privacy consent to using *locally owned* visit-history photos
+    /// for approximate, on-device street-level reconstruction. Never implied
+    /// by enabling the 3D map and disabled by default.
+    pub world_history_photo_reconstruction: bool,
+    /// Separate opt-in for retaining reconstruction artifacts locally.
+    /// A future implementation must provide explicit deletion controls.
+    pub world_history_reconstruction_cache: bool,
     /// MapShowPeople / MapShowInfohubs / MapShowTelehubs / MapShowLandForSale.
     pub world_people: bool,
     pub world_infohubs: bool,
@@ -4407,6 +4426,9 @@ impl Default for MapSettings {
             mini_locked: false,
             mini_double_click: 2,
             world_scale: 128.0,
+            world_projection: WorldMapProjection::Flat,
+            world_history_photo_reconstruction: false,
+            world_history_reconstruction_cache: false,
             world_people: true,
             world_infohubs: true,
             world_telehubs: true,
