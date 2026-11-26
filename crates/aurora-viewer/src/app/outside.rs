@@ -48,6 +48,10 @@ impl App {
         let icon = self.window_icon.clone();
         // (where the system tells a program where its window is: not Wayland)
         let origin = own.inner_position().ok().map(|at| (at, own.scale_factor()));
+        // A detached window may have been on a monitor that is no longer connected.
+        // Collect the current desktop topology before the reconciliation callback.
+        let monitors: Vec<_> = event_loop.available_monitors().map(|m| (m.position(), m.size())).collect();
+        let primary = event_loop.primary_monitor().map(|m| m.position());
         self.outside.reconcile(event_loop, own, renderer, &self.egui_ctx, |ask, was| {
             let attributes = crate::cli::with_desktop_id(Window::default_attributes())
                 .with_title(ask.title.clone())
@@ -64,7 +68,7 @@ impl App {
                 attributes
             };
             match opens_at(was.and_then(|was| was.at), origin, ask.rect.min, zoom) {
-                Some(at) => attributes.with_position(at),
+                Some(at) => attributes.with_position(reachable_position(at, &monitors, primary)),
                 None => attributes,
             }
         });
@@ -379,6 +383,36 @@ fn opens_at(
     was.or_else(|| origin.map(|(origin, scale)| on_screen(origin, scale, at, zoom)))
 }
 
+/// Keep the title bar of an outside window reachable if a display was unplugged.
+/// Preserve an existing position exactly while its title is still accessible;
+/// only choose the primary/first screen when it is completely unreachable.
+/// No coordinate recovery is attempted if the compositor exposes no topology.
+fn reachable_position(
+    at: winit::dpi::PhysicalPosition<i32>,
+    monitors: &[(winit::dpi::PhysicalPosition<i32>, winit::dpi::PhysicalSize<u32>)],
+    primary: Option<winit::dpi::PhysicalPosition<i32>>,
+) -> winit::dpi::PhysicalPosition<i32> {
+    if monitors.is_empty() {
+        return at;
+    }
+    // Count at least 48 horizontal and 24 vertical pixels of the title bar
+    // as reachable, including a window moved partly beyond a screen edge.
+    let visible = monitors.iter().any(|(pos, size)| {
+        let left = i64::from(at.x).max(i64::from(pos.x));
+        let right = (i64::from(at.x) + 96).min(i64::from(pos.x) + i64::from(size.width));
+        let top = i64::from(at.y).max(i64::from(pos.y));
+        let bottom = (i64::from(at.y) + 40).min(i64::from(pos.y) + i64::from(size.height));
+        right - left >= 48 && bottom - top >= 24
+    });
+    if visible {
+        return at;
+    }
+    let fallback = primary
+        .filter(|p| monitors.iter().any(|(pos, _)| pos == p))
+        .unwrap_or(monitors[0].0);
+    winit::dpi::PhysicalPosition::new(fallback.x.saturating_add(48), fallback.y.saturating_add(48))
+}
+
 /// An event a window outside hands on (`Asked::Viewer`). Its focus that
 /// goes lets go of what the keyboard and the pointer held, as the viewer's
 /// own does, unless the viewer's own window has the focus already: what
@@ -436,6 +470,21 @@ mod tests {
         assert_eq!(opens_at(Some(was), origin, inside, 1.0), Some(was));
         // the system places the windows itself and says nothing of it
         assert_eq!(opens_at(None, None, inside, 1.0), None);
+    }
+
+    #[test]
+    fn an_unplugged_monitor_does_not_strand_an_outside_window() {
+        let monitor = |x, y, w, h| (winit::dpi::PhysicalPosition::new(x, y), winit::dpi::PhysicalSize::new(w, h));
+        let monitors = [monitor(0, 0, 1920, 1080), monitor(-2560, 0, 2560, 1440)];
+        let on_second = winit::dpi::PhysicalPosition::new(-2000, 200);
+        assert_eq!(reachable_position(on_second, &monitors, Some(monitors[0].0)), on_second);
+        let only_primary = &monitors[..1];
+        assert_eq!(reachable_position(on_second, only_primary, Some(monitors[0].0)), winit::dpi::PhysicalPosition::new(48, 48));
+        // Preserve a partially off-screen window while its title bar is usable.
+        let partly_visible = winit::dpi::PhysicalPosition::new(1850, 20);
+        assert_eq!(reachable_position(partly_visible, only_primary, None), partly_visible);
+        // Compositors without monitor coordinates remain in charge of placement.
+        assert_eq!(reachable_position(on_second, &[], None), on_second);
     }
 
     #[test]
